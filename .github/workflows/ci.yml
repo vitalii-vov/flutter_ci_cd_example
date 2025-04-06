@@ -1,0 +1,92 @@
+name: CI
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+  push:
+    branches:
+      - dev
+      - main
+
+jobs:
+  flutter_test:
+    name: Analyze and Test
+    runs-on: macos-latest
+    steps:
+      # Checkout Repository
+      - uses: actions/checkout@v3
+
+      # Setup Java
+      - uses: actions/setup-java@v1
+        with:
+          java-version: "17.x"
+
+      # Setup Flutter
+      - uses: subosito/flutter-action@v1
+        with:
+          channel: "stable"
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+  release_and_sign_android:
+    name: Release and Sign Android
+    needs: [flutter_test]
+    runs-on: macos-latest
+    steps:
+      # Checkout Repository
+      - uses: actions/checkout@v3
+
+      # Setup Java
+      - uses: actions/setup-java@v1
+        with:
+          java-version: "17.x"
+
+      # Setup Flutter
+      - uses: subosito/flutter-action@v1
+        with:
+          channel: "stable"
+      - run: flutter pub get
+      - run: flutter clean
+
+      # Setup Keystore
+      - name: Decode Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/keystore.jks
+      
+      # Create key.properties
+      - run: |
+          echo "storePassword=${{ secrets.KEYSTORE_PASSWORD }}" > android/key.properties
+          echo "keyPassword=${{ secrets.KEY_PASSWORD }}" >> android/key.properties
+          echo "keyAlias=${{ secrets.KEY_ALIAS }}" >> android/key.properties
+          echo "storeFile=keystore.jks" >> android/key.properties
+        
+      # Building APK
+      - run: flutter build apk --release
+
+      # Building App Bundle (aab)
+      - run: flutter build appbundle
+      
+      # Extract name and version from pubspec.yaml
+      - id: extract_metadata
+        run: |
+          name=$(grep '^name:' pubspec.yaml | cut -d ' ' -f2 | tr -d '\r')
+          version=$(grep '^version:' pubspec.yaml | cut -d ' ' -f2 | tr -d '\r')
+          echo "APP_NAME=$name" >> $GITHUB_ENV
+          echo "APP_VERSION=$version" >> $GITHUB_ENV
+
+      # Rename and move Android outputs into structured folders
+      - name: Organize Android Artifacts
+        run: |
+          mkdir -p release/android/apk
+          mkdir -p release/android/aab
+
+          mv build/app/outputs/flutter-apk/app-release.apk release/android/apk/${{ env.APP_NAME }}${{ env.APP_VERSION }}.apk
+          mv build/app/outputs/bundle/release/app-release.aab release/android/aab/${{ env.APP_NAME }}${{ env.APP_VERSION }}.aab
+
+      # Upload renamed artifacts with structure
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Android Releases
+          path: release/android
